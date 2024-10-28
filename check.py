@@ -198,12 +198,6 @@ class ClashConfig:
     def save(self):
         """保存配置到文件"""
         try:
-            # 备份原配置文件
-            backup_path = f"{self.config_path}.backup"
-            with open(backup_path, 'w', encoding='utf-8') as f:
-                yaml.dump(self.config, f, allow_unicode=True, sort_keys=False)
-            print(f"原配置已备份到: {backup_path}")
-
             # 保存新配置
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(self.config, f, allow_unicode=True, sort_keys=False)
