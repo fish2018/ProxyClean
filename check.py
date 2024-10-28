@@ -9,7 +9,8 @@ import argparse
 
 # 配置参数
 TEST_URL = "http://www.gstatic.com/generate_204"
-CLASH_API_URL = "http://127.0.0.1:9090"
+CLASH_API_PORTS = [9090, 9097]  # 支持多个端口
+CLASH_API_HOST = "127.0.0.1"
 CLASH_API_SECRET = ""
 TIMEOUT = 5
 MAX_CONCURRENT_TESTS = 100
@@ -35,8 +36,10 @@ class ProxyTestResult:
 
 
 class ClashAPI:
-    def __init__(self, base_url: str, secret: str = ""):
-        self.base_url = base_url.rstrip('/')
+    def __init__(self, host: str, ports: List[int], secret: str = ""):
+        self.host = host
+        self.ports = ports
+        self.base_url = None  # 将在连接检查时设置
         self.headers = {
             "Authorization": f"Bearer {secret}" if secret else "",
             "Content-Type": "application/json"
@@ -52,22 +55,29 @@ class ClashAPI:
         await self.client.aclose()
 
     async def check_connection(self) -> bool:
-        """检查与 Clash API 的连接状态"""
-        try:
-            response = await self.client.get(f"{self.base_url}/version")
-            if response.status_code == 200:
-                version = response.json().get('version', 'unknown')
-                print(f"成功连接到 Clash API，版本: {version}")
-                return True
-            print(f"连接到 Clash API 失败，状态码: {response.status_code}")
-            return False
-        except httpx.RequestError as e:
-            print(f"无法连接到 Clash API: {e}")
-            print(f"请确保 Clash 正在运行，并且 External Controller 已启用于 {self.base_url}")
-            return False
+        """检查与 Clash API 的连接状态，自动尝试不同端口"""
+        for port in self.ports:
+            try:
+                test_url = f"http://{self.host}:{port}"
+                response = await self.client.get(f"{test_url}/version")
+                if response.status_code == 200:
+                    version = response.json().get('version', 'unknown')
+                    print(f"成功连接到 Clash API (端口 {port})，版本: {version}")
+                    self.base_url = test_url
+                    return True
+            except httpx.RequestError:
+                print(f"端口 {port} 连接失败，尝试下一个端口...")
+                continue
+
+        print("所有端口均连接失败")
+        print(f"请确保 Clash 正在运行，并且 External Controller 已启用于以下端口之一: {', '.join(map(str, self.ports))}")
+        return False
 
     async def get_proxies(self) -> Dict:
         """获取所有代理节点信息"""
+        if not self.base_url:
+            raise ClashAPIException("未建立与 Clash API 的连接")
+
         try:
             response = await self.client.get(
                 f"{self.base_url}/proxies",
@@ -84,6 +94,9 @@ class ClashAPI:
 
     async def test_proxy_delay(self, proxy_name: str) -> ProxyTestResult:
         """测试指定代理节点的延迟，使用缓存避免重复测试"""
+        if not self.base_url:
+            raise ClashAPIException("未建立与 Clash API 的连接")
+
         # 检查缓存
         if proxy_name in self._test_results_cache:
             cached_result = self._test_results_cache[proxy_name]
@@ -144,22 +157,88 @@ class ClashConfig:
                 return group.get("proxies", [])
         return []
 
-    def update_group_proxies(self, group_name: str, proxies: List[str]):
-        """更新指定组的代理列表"""
+    def remove_invalid_proxies(self, results: List[ProxyTestResult]):
+        """从配置中完全移除失效的节点"""
+        # 获取所有失效节点名称
+        invalid_proxies = {r.name for r in results if not r.is_valid}
+
+        if not invalid_proxies:
+            return
+
+        # 从 proxies 部分移除失效节点
+        valid_proxies = []
+        if "proxies" in self.config:
+            valid_proxies = [p for p in self.config["proxies"]
+                             if p.get("name") not in invalid_proxies]
+            self.config["proxies"] = valid_proxies
+
+        # 从所有代理组中移除失效节点
+        for group in self.proxy_groups:
+            if "proxies" in group:
+                group["proxies"] = [p for p in group["proxies"]
+                                    if p not in invalid_proxies]
+
+        print(f"\n已从配置中移除 {len(invalid_proxies)} 个失效节点")
+
+    def update_group_proxies(self, group_name: str, results: List[ProxyTestResult]):
+        """更新指定组的代理列表，仅保留有效节点并按延迟排序"""
+        # 移除失效节点
+        self.remove_invalid_proxies(results)
+
+        # 获取有效节点并按延迟排序
+        valid_results = [r for r in results if r.is_valid]
+        valid_results.sort(key=lambda x: x.delay)
+
+        # 更新代理组
         for group in self.proxy_groups:
             if group["name"] == group_name:
-                group["proxies"] = proxies
+                group["proxies"] = [r.name for r in valid_results]
                 break
 
     def save(self):
         """保存配置到文件"""
         try:
+            # 备份原配置文件
+            backup_path = f"{self.config_path}.backup"
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                yaml.dump(self.config, f, allow_unicode=True, sort_keys=False)
+            print(f"原配置已备份到: {backup_path}")
+
+            # 保存新配置
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(self.config, f, allow_unicode=True, sort_keys=False)
-            print(f"配置已保存到: {self.config_path}")
+            print(f"新配置已保存到: {self.config_path}")
         except Exception as e:
             print(f"保存配置文件失败: {e}")
             sys.exit(1)
+
+
+def print_test_summary(group_name: str, results: List[ProxyTestResult]):
+    """打印测试结果摘要"""
+    valid_results = [r for r in results if r.is_valid]
+    invalid_results = [r for r in results if not r.is_valid]
+    total = len(results)
+    valid = len(valid_results)
+    invalid = len(invalid_results)
+
+    print(f"\n策略组 '{group_name}' 测试结果:")
+    print(f"总节点数: {total}")
+    print(f"可用节点数: {valid}")
+    print(f"失效节点数: {invalid}")
+
+    if valid > 0:
+        avg_delay = sum(r.delay for r in valid_results) / valid
+        print(f"平均延迟: {avg_delay:.2f}ms")
+
+        print("\n延迟最低的前5个节点:")
+        sorted_results = sorted(valid_results, key=lambda x: x.delay)
+        for i, result in enumerate(sorted_results[:5], 1):
+            print(f"{i}. {result.name}: {result.delay:.2f}ms")
+
+    if invalid > 0:
+        print("\n失效节点:")
+        for i, result in enumerate(invalid_results, 1):
+            print(f"{i}. {result.name}")
 
 
 async def test_group_proxies(clash_api: ClashAPI, proxies: List[str]) -> List[ProxyTestResult]:
@@ -183,41 +262,19 @@ async def test_group_proxies(clash_api: ClashAPI, proxies: List[str]) -> List[Pr
     return results
 
 
-def print_test_summary(group_name: str, results: List[ProxyTestResult]):
-    """打印测试结果摘要"""
-    valid_results = [r for r in results if r.is_valid]
-    total = len(results)
-    valid = len(valid_results)
-
-    print(f"\n策略组 '{group_name}' 测试结果:")
-    print(f"总节点数: {total}")
-    print(f"可用节点数: {valid}")
-
-    if valid > 0:
-        avg_delay = sum(r.delay for r in valid_results) / valid
-        print(f"平均延迟: {avg_delay:.2f}ms")
-
-        print("\n延迟最低的前5个节点:")
-        sorted_results = sorted(valid_results, key=lambda x: x.delay)
-        for i, result in enumerate(sorted_results[:5], 1):
-            print(f"{i}. {result.name}: {result.delay:.2f}ms")
-    else:
-        print("没有可用节点")
-
-
 def parse_arguments():
     """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='Clash 代理节点测试工具')
-    parser.add_argument('-c', '--config', default='config.yaml',
-                        help='Clash 配置文件路径 (默认: config.yaml)')
+    parser = argparse.ArgumentParser(description='Clash 代理节点测试和清理工具')
+    parser.add_argument('-c', '--config', default='clash_config.yaml',
+                        help='Clash 配置文件路径 (默认: clash_config.yaml)')
     parser.add_argument('-g', '--groups', nargs='*',
                         help='要测试的策略组名称 (默认: 测试所有组)')
     parser.add_argument('-n', '--concurrent', type=int, default=MAX_CONCURRENT_TESTS,
                         help=f'最大并发测试数量 (默认: {MAX_CONCURRENT_TESTS})')
     parser.add_argument('-t', '--timeout', type=int, default=TIMEOUT,
                         help=f'测试超时时间（秒）(默认: {TIMEOUT})')
-    parser.add_argument('-u', '--url', default=CLASH_API_URL,
-                        help=f'Clash API 地址 (默认: {CLASH_API_URL})')
+    parser.add_argument('-p', '--ports', type=int, nargs='*', default=CLASH_API_PORTS,
+                        help=f'Clash API 端口列表 (默认: {" ".join(map(str, CLASH_API_PORTS))})')
     parser.add_argument('-s', '--secret',
                         help='Clash API Secret')
     return parser.parse_args()
@@ -227,15 +284,14 @@ async def main():
     args = parse_arguments()
 
     # 更新全局配置
-    global MAX_CONCURRENT_TESTS, TIMEOUT, CLASH_API_URL, CLASH_API_SECRET
+    global MAX_CONCURRENT_TESTS, TIMEOUT, CLASH_API_SECRET
     MAX_CONCURRENT_TESTS = args.concurrent
     TIMEOUT = args.timeout
-    CLASH_API_URL = args.url
     CLASH_API_SECRET = args.secret or CLASH_API_SECRET
 
-    print(f"Clash 节点测试工具")
+    print(f"Clash 节点测试和清理工具")
     print(f"配置文件: {args.config}")
-    print(f"API 地址: {CLASH_API_URL}")
+    print(f"API 端口: {args.ports}")
     print(f"并发数量: {MAX_CONCURRENT_TESTS}")
     print(f"超时时间: {TIMEOUT}秒")
 
@@ -259,11 +315,15 @@ async def main():
 
     # 开始测试
     start_time = datetime.now()
-    async with ClashAPI(CLASH_API_URL, CLASH_API_SECRET) as clash_api:
+
+    # 创建支持多端口的API实例
+    async with ClashAPI(CLASH_API_HOST, args.ports, CLASH_API_SECRET) as clash_api:
         if not await clash_api.check_connection():
             return
 
         try:
+            all_test_results = []  # 收集所有测试结果
+
             # 测试每个策略组
             for group_name in groups_to_test:
                 print(f"\n======================== 开始测试策略组: {group_name} ====================")
@@ -275,19 +335,20 @@ async def main():
 
                 # 测试该组的所有节点
                 results = await test_group_proxies(clash_api, proxies)
+                all_test_results.extend(results)
 
                 # 打印测试结果摘要
                 print_test_summary(group_name, results)
 
-                # 更新配置
-                valid_proxies = [r.name for r in sorted(
-                    [r for r in results if r.is_valid],
-                    key=lambda x: x.delay
-                )]
+            # 一次性移除所有失效节点并更新配置
+            config.remove_invalid_proxies(all_test_results)
 
-                if valid_proxies:
-                    config.update_group_proxies(group_name, valid_proxies)
-                    print(f"已更新策略组 '{group_name}' 的节点顺序")
+            # 为每个组更新有效节点的顺序
+            for group_name in groups_to_test:
+                group_proxies = config.get_group_proxies(group_name)
+                group_results = [r for r in all_test_results if r.name in group_proxies]
+                config.update_group_proxies(group_name, group_results)
+                print(f"已更新策略组 '{group_name}' 的节点顺序")
 
             # 保存更新后的配置
             config.save()
