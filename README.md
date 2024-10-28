@@ -49,7 +49,7 @@
 
 ### 使用说明  
 添加了命令行参数支持:  
-- -c/--config: 指定配置文件路径，默认config.yaml
+- -c/--config: 指定配置文件路径，默认clash_config.yaml
 - -g/--groups: 指定要测试的策略组
 - -n/--concurrent: 设置并发数
 - -t/--timeout: 设置超时时间
