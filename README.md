@@ -26,7 +26,7 @@
 
 ### 使用说明  
 添加了命令行参数支持:  
-- -c/--config: 指定配置文件路径
+- -c/--config: 指定配置文件路径，默认config.yaml
 - -g/--groups: 指定要测试的策略组
 - -n/--concurrent: 设置并发数
 - -t/--timeout: 设置超时时间
@@ -43,3 +43,26 @@ python check.py
 ```
 python check.py -g "自动选择"
 ```
+
+### CLASH API默认端口说明
+1. Clash 核心
+- Clash Premium: 9090 (遵循配置文件中的external-controller设置)
+- Clash Core: 9090 (遵循配置文件设置)
+
+2. Windows 客户端
+- Clash for Windows: 9090
+- Clash Verge: 9097
+- ClashN: 9090
+- Fndroid: 9090
+
+3. macOS 客户端
+- ClashX: 9090
+- ClashX Pro: 9090
+- Clash Verge: 9097
+
+4. Linux 客户端
+- Clash Verge: 9097
+- Clash for Windows: 9090
+
+5. Android 客户端
+- ClashForAndroid: 9090
