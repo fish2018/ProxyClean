@@ -28,27 +28,7 @@
 | Vivo       | http://wifi.vivo.com.cn/generate_204 | 10 | 5 | 204/204 | 4 |
 
 ### CLASH API默认端口说明
-1. Clash 核心
-- Clash Premium: 9090 (遵循配置文件中的external-controller设置)
-- Clash Core: 9090 (遵循配置文件设置)
-
-2. Windows 客户端
-- Clash for Windows: 9090
-- Clash Verge: 9097
-- ClashN: 9090
-- Fndroid: 9090
-
-3. macOS 客户端
-- ClashX: 9090
-- ClashX Pro: 9090
-- Clash Verge: 9097
-
-4. Linux 客户端
-- Clash Verge: 9097
-- Clash for Windows: 9090
-
-5. Android 客户端
-- ClashForAndroid: 9090
+默认clash api端口为9090，但是不同的客户端映射出来的端口会有差异，比如mac版clash verge使用的9097，具体端口在客户端软件上查看
 
 ### 使用说明  
 添加了命令行参数支持:  
