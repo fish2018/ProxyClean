@@ -187,6 +187,7 @@ class ClashConfig:
 
         # 获取有效节点并按延迟排序
         valid_results = [r for r in results if r.is_valid]
+        valid_results = list(set(valid_results))
         valid_results.sort(key=lambda x: x.delay)
 
         # 更新代理组
